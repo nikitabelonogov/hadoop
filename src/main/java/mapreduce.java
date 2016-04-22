@@ -1,8 +1,10 @@
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.Scan;
+import org.apache.hadoop.hbase.filter.FirstKeyOnlyFilter;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
 import org.apache.hadoop.hbase.mapreduce.TableMapReduceUtil;
 import org.apache.hadoop.hbase.mapreduce.TableMapper;
@@ -24,15 +26,15 @@ public class mapreduce {
 
     public static class MyMapper extends TableMapper<Text, IntWritable> {
 
-        private final IntWritable ONE = new IntWritable(1);
-        private Text text = new Text();
+        private Text key = new Text();
+        private IntWritable val = new IntWritable(0);
 
         @Override
         public void map(ImmutableBytesWritable row, Result value, Context context) throws IOException, InterruptedException {
-            String val = new String(value.getValue(Bytes.toBytes("cf"), Bytes.toBytes("attr")));
-            text.set(val);
+            key.set(Bytes.toString(row.get()));
+            val.set(Integer.parseInt(new String(value.getValue(Bytes.toBytes("key"), null))));
 
-            context.write(text, ONE);
+            context.write(key, val);
         }
     }
 
@@ -44,7 +46,7 @@ public class mapreduce {
                 i += val.get();
             }
             Put put = new Put(Bytes.toBytes(key.toString()));
-            put.add(Bytes.toBytes("cf"), Bytes.toBytes("count"), Bytes.toBytes(i));
+            put.add(Bytes.toBytes("key"), null, Bytes.toBytes(i));
 
             context.write(null, put);
         }
@@ -52,28 +54,24 @@ public class mapreduce {
 
     public static void main(String[] args) throws Exception {
         Configuration config = HBaseConfiguration.create();
-        Job job = new Job(config,"ExampleSummary");
-        job.setJarByClass(mapreduce.class);     // class that contains mapper and reducer
+        Job job = new Job(config,"Summary Join");
+        job.setJarByClass(mapreduce.class);
 
         List scans = new ArrayList();
 
         Scan scan = new Scan();
-        scan.addFamily(Bytes.toBytes("oid"));
-        scan.setAttribute(Scan.SCAN_ATTRIBUTES_TABLE_NAME, "in".getBytes());
+        scan.addFamily(Bytes.toBytes("key"));
+        scan.setAttribute(Scan.SCAN_ATTRIBUTES_TABLE_NAME, Bytes.toBytes("in1"));
         scans.add(scan);
 
-        scans.add(scan);
-        TableMapReduceUtil.initTableMapperJob(
-                scans,               // Scan instance to control CF and attribute selection
-                MyMapper.class,     // mapper class
-                Text.class,         // mapper output key
-                IntWritable.class,  // mapper output value
-                job);
-        TableMapReduceUtil.initTableReducerJob(
-                "out",        // output table
-                MyReducer.class,    // reducer class
-                job);
-        job.setNumReduceTasks(1);   // at least one, adjust as required
+        Scan scan2 = new Scan();
+        scan2.addFamily(Bytes.toBytes("key"));
+        scan2.setAttribute(Scan.SCAN_ATTRIBUTES_TABLE_NAME, Bytes.toBytes("in2"));
+        scans.add(scan2);
+
+        TableMapReduceUtil.initTableMapperJob(scans, MyMapper.class, Text.class, IntWritable.class, job);
+        TableMapReduceUtil.initTableReducerJob("out", MyReducer.class, job);
+        job.setNumReduceTasks(1);
 
         boolean b = job.waitForCompletion(true);
         if (!b) {
