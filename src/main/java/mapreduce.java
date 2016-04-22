@@ -1,3 +1,5 @@
+import com.google.common.collect.Iterables;
+import org.apache.batik.css.engine.value.Value;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.HBaseConfiguration;
@@ -9,6 +11,7 @@ import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
 import org.apache.hadoop.hbase.mapreduce.TableMapReduceUtil;
 import org.apache.hadoop.hbase.mapreduce.TableMapper;
 import org.apache.hadoop.hbase.mapreduce.TableReducer;
+import org.apache.hadoop.hbase.mapreduce.TableSplit;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.io.Text;
@@ -24,31 +27,45 @@ import java.util.List;
 
 public class mapreduce {
 
-    public static class MyMapper extends TableMapper<Text, IntWritable> {
-
-        private Text key = new Text();
-        private IntWritable val = new IntWritable(0);
-
+    public static class MyMapper extends TableMapper<ImmutableBytesWritable, Put> {
         @Override
-        public void map(ImmutableBytesWritable row, Result value, Context context) throws IOException, InterruptedException {
-            key.set(Bytes.toString(row.get()));
-            val.set(Integer.parseInt(new String(value.getValue(Bytes.toBytes("key"), null))));
-
-            context.write(key, val);
+        public void map(ImmutableBytesWritable row, Result result, Context context) throws IOException, InterruptedException {
+            byte[] tableName = ((TableSplit) context.getInputSplit()).getTableName();
+            if(Bytes.compareTo(tableName, Bytes.toBytes("authors")) == 0) {
+                ImmutableBytesWritable author = new ImmutableBytesWritable(row.get());
+                Put put = new Put(Bytes.toBytes("homeland"));
+                put.addColumn(Bytes.toBytes("homeland"), null, result.getValue(Bytes.toBytes("homeland"), null));
+                context.write(author, put);
+            }
+            else if(Bytes.compareTo(tableName, Bytes.toBytes("books")) == 0) {
+                ImmutableBytesWritable author = new ImmutableBytesWritable(result.getValue(Bytes.toBytes("author"), null));
+                Put put = new Put(Bytes.toBytes("book"));
+                put.addColumn(Bytes.toBytes("book"), null, row.get());
+                context.write(author, put);
+            }
         }
     }
 
-    public static class MyReducer extends TableReducer<Text, IntWritable, ImmutableBytesWritable> {
+    public static class MyReducer extends TableReducer<ImmutableBytesWritable, Put, ImmutableBytesWritable> {
+        @Override
+        public void reduce(ImmutableBytesWritable author, Iterable<Put> values, Context context) throws IOException, InterruptedException {
 
-        public void reduce(Text key, Iterable<IntWritable> values, Context context) throws IOException, InterruptedException {
-            int i = 0;
-            for (IntWritable val : values) {
-                i += val.get();
+            List<Put> books = new ArrayList<Put>();
+            Put homeland = new Put(author.get());
+
+            for (Put val : values) {
+                if (Bytes.compareTo(val.getRow(), Bytes.toBytes("book")) == 0)
+                    books.add(val);
+                if (Bytes.compareTo(val.getRow(), Bytes.toBytes("homeland")) == 0)
+                    homeland = val;
             }
-            Put put = new Put(Bytes.toBytes(key.toString()));
-            put.add(Bytes.toBytes("key"), null, Bytes.toBytes(i));
 
-            context.write(null, put);
+            Put resultput = new Put(author.get());
+            Cell kv = homeland.get(Bytes.toBytes("homeland"), null).get(0);
+            resultput.addColumn(Bytes.toBytes("homeland"), null, Bytes.copy(kv.getValueArray(), kv.getValueOffset(), kv.getValueLength()));
+            resultput.addColumn(Bytes.toBytes("book quantity"), null, Bytes.toBytes(books.size()));
+
+            context.write(null, resultput);
         }
     }
 
@@ -59,17 +76,17 @@ public class mapreduce {
 
         List scans = new ArrayList();
 
-        Scan scan = new Scan();
-        scan.addFamily(Bytes.toBytes("key"));
-        scan.setAttribute(Scan.SCAN_ATTRIBUTES_TABLE_NAME, Bytes.toBytes("in1"));
-        scans.add(scan);
+        Scan books = new Scan();
+        books.setAttribute(Scan.SCAN_ATTRIBUTES_TABLE_NAME, Bytes.toBytes("books"));
+        books.addFamily(Bytes.toBytes("author"));
+        scans.add(books);
 
-        Scan scan2 = new Scan();
-        scan2.addFamily(Bytes.toBytes("key"));
-        scan2.setAttribute(Scan.SCAN_ATTRIBUTES_TABLE_NAME, Bytes.toBytes("in2"));
-        scans.add(scan2);
+        Scan autors = new Scan();
+        autors.setAttribute(Scan.SCAN_ATTRIBUTES_TABLE_NAME, Bytes.toBytes("authors"));
+        autors.addFamily(Bytes.toBytes("homeland"));
+        scans.add(autors);
 
-        TableMapReduceUtil.initTableMapperJob(scans, MyMapper.class, Text.class, IntWritable.class, job);
+        TableMapReduceUtil.initTableMapperJob(scans, MyMapper.class, ImmutableBytesWritable.class, Put.class, job);
         TableMapReduceUtil.initTableReducerJob("out", MyReducer.class, job);
         job.setNumReduceTasks(1);
 
